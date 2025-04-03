@@ -4,3 +4,7 @@ case 2 revenue: 196.249579025
 case 3 revenue: 187.15561705000002
 case 4 revenue: 192.331102725
 
+233e78cec713a9422c210571b85b5b3db9c0cd39
+Best case 875
+sq: 0.38, dq:0.66
+Max Revenue: 197.139130625
