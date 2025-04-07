@@ -4,23 +4,29 @@ import numpy as np
 # Cost Data
 # https://doi.org/10.1016/j.apenergy.2024.124105
 npp_capital_per_mwth = 1.33e9 / 840  # $/MWth
-npp_fixed_costs_per_year_per_mwth = 44.8e3 / 840  # $/MWth/yr
+npp_fixed_costs_per_year_per_mwth = 44.8e3  # $/MWth/yr
 npp_variable_costs_per_mwhth = 7.43  # $/MWhth
 
 bop_capital_per_mwe = 6e8 / 500  # $/MWe
-bop_fixed_costs_per_year_per_mwe = 50e3 / 500  # $/MWe/yr
+bop_fixed_costs_per_year_per_mwe = 50e3  # $/MWe/yr
 bop_variable_costs_per_mwhe = 1  # $/MWhe
 
 tes_capital_per_mwhth = 6.75e6 / 2288  # $/MWhth
-tes_fixed_costs_per_year_per_mwhth = 28.5e3 / 2288  # $/MWhth/yr
+tes_fixed_costs_per_year_per_mwhth = 28.5e3  # $/MWhth/yr
 tes_variable_costs = 0  # The reference listed in the above paper has variable
 # costs from a white paper on hot water sensible heat storage with dubious
 # units. Unless I find a better number I'm leaving this at zero.
-# Variable costs listed at 16$/MWhth (!)
+# Variable costs listed at 16$/MWhth (!). Seems unlikely that it costs more
+# to put one MWh into some salt than it does to get it out of the reactor.
 
 # Assumed tax and interest rates
-tau = 0.4
+# https://investors.constellationenergy.com/static-files/f7b0e530-f7eb-434e-ae1b-7fbc886a256f slide 36
+tau = 0.19
+
+# From class examples
 p_tax = 0.01
+
+# INL cites this as typical (average weighted cost of capital) https://inldigitallibrary.inl.gov/sites/sti/sti/Sort_66425.pdf
 x = 0.08
 
 
@@ -41,7 +47,24 @@ def calc_levelized_capex(lifetime, p_tax, tau, x, cap_cost, power):
 
 
 class DayAheadNatrium(object):
-    """Use the previous day's data to determine current day's bids"""
+    """Use the previous day's data to determine current day's bids
+
+    Arguments:
+        start_day (iterable of float): An initial days LMP data to determine
+            bids for the first day of the simulation.
+        min_output (float): Minimum output of the BOP, MWe
+        max_output (float): Max output of the BOP, MWe
+        max_output_hours (float): Hours for which the plant can support
+            max_output.
+        continuous_output (float): Continuous output of the plant, MWe
+        storage_quantile (float): Quantile of the previous days LMP data that
+            sets the bid from the TES. Below this, the plant will charge the
+            TES.
+        discharge_quantile (float): Quantile of the previous days LMP data that
+            sets the ask from the TES. Above this the plant will discharge the
+            TES.
+        efficiency (float): Thermodynamic efficiency of the plant.
+    """
 
     def __init__(
         self,
@@ -104,8 +127,12 @@ class DayAheadNatrium(object):
             if self.stored_energy + self.charge_rate <= self.max_stored_energy:
                 return self.min_output
             else:
-                return self.continuous_output - (
-                    self.max_stored_energy - self.stored_energy
+                return max(
+                    (
+                        self.continuous_output
+                        - (self.max_stored_energy - self.stored_energy)
+                    ),
+                    self.min_output,
                 )
 
         if self.storage_bid <= lmp and lmp <= self.discharge_bid:
