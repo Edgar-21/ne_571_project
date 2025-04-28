@@ -1,33 +1,6 @@
 import pandas as pd
 import numpy as np
-
-# Cost Data
-# https://doi.org/10.1016/j.apenergy.2024.124105
-npp_capital_per_mwth = 1.33e9 / 840  # $/MWth
-npp_fixed_costs_per_year_per_mwth = 44.8e3  # $/MWth/yr
-npp_variable_costs_per_mwhth = 7.43  # $/MWhth
-
-bop_capital_per_mwe = 6e8 / 500  # $/MWe
-bop_fixed_costs_per_year_per_mwe = 50e3  # $/MWe/yr
-bop_variable_costs_per_mwhe = 1  # $/MWhe
-
-tes_capital_per_mwhth = 6.75e6 / 2288  # $/MWhth
-tes_fixed_costs_per_year_per_mwhth = 28.5e3  # $/MWhth/yr
-tes_variable_costs = 0  # The reference listed in the above paper has variable
-# costs from a white paper on hot water sensible heat storage with dubious
-# units. Unless I find a better number I'm leaving this at zero.
-# Variable costs listed at 16$/MWhth (!). Seems unlikely that it costs more
-# to put one MWh into some salt than it does to get it out of the reactor.
-
-# Assumed tax and interest rates
-# https://investors.constellationenergy.com/static-files/f7b0e530-f7eb-434e-ae1b-7fbc886a256f slide 36
-tau = 0.19
-
-# From class examples
-p_tax = 0.01
-
-# INL cites this as typical (average weighted cost of capital) https://inldigitallibrary.inl.gov/sites/sti/sti/Sort_66425.pdf
-x = 0.08
+from scipy.optimize import differential_evolution
 
 
 def calc_a_over_p(i, n):
@@ -44,6 +17,52 @@ def calc_levelized_capex(lifetime, p_tax, tau, x, cap_cost, power):
         / 365
         / 24
     )
+
+
+def get_reactor_revenue(x, reactor, day_cycles):
+    """x is tuple of (sq, dq)"""
+    reactor.reset_reactor()
+    sq, dq = x
+    reactor.storage_quantile = sq
+    reactor.discharge_quantile = dq
+    for day in day_cycles:
+        reactor.update(day)
+
+    revenue = reactor.get_average_price_for_electricity()
+    return revenue
+
+
+def negative_profit(x, reactor, day_cycles):
+    return -get_reactor_revenue(x, reactor, day_cycles)
+
+
+def optimize_reactor_bids(
+    reactor,
+    day_cycles,
+    sq_bounds=(0.01, 0.99),
+    dq_bounds=(0.01, 0.99),
+):
+    # Define bounds for differential_evolution
+    bounds = [sq_bounds, dq_bounds]
+
+    # Run differential evolution
+    results = differential_evolution(
+        negative_profit,
+        bounds,
+        args=(reactor, day_cycles),
+        disp=True,  # Show progress
+        updating="deferred",  # Standard DE/rand/1/bin strategy
+        popsize=15,  # Increase population size for better exploration
+        tol=0.01,  # Convergence tolerance
+        maxiter=100,  # Maximum number of generations
+    )
+
+    print("Optimization status:", results.success, results.message)
+    print("Function evaluations:", results.nfev)
+    print("Final parameters:", results.x)
+    print("Maximized value:", -results.fun)
+
+    return results.x
 
 
 class DayAheadNatrium(object):
@@ -113,6 +132,36 @@ class DayAheadNatrium(object):
             "Revenue": [],
         }
 
+        # Cost Data
+        # https://doi.org/10.1016/j.apenergy.2024.124105
+        self.npp_capital_per_mwth = 1.33e9 / 840  # $/MWth
+        self.npp_fixed_costs_per_year_per_mwth = 44.8e3  # $/MWth/yr
+        self.npp_variable_costs_per_mwhth = 7.43  # $/MWhth
+
+        self.bop_capital_per_mwe = 6e8 / 500  # $/MWe
+        self.bop_fixed_costs_per_year_per_mwe = 50e3  # $/MWe/yr
+        self.bop_variable_costs_per_mwhe = 1  # $/MWhe
+
+        self.tes_capital_per_mwhth = 6.75e6 / 2288  # $/MWhth
+        self.tes_fixed_costs_per_year_per_mwhth = 28.5e3  # $/MWhth/yr
+        self.tes_variable_costs = (
+            0  # The reference listed in the above paper has variable
+        )
+        # costs from a white paper on hot water sensible heat storage with dubious
+        # units. Unless I find a better number I'm leaving this at zero.
+        # Variable costs listed at 16$/MWhth (!). Seems unlikely that it costs more
+        # to put one MWh into some salt than it does to get it out of the reactor.
+
+        # Assumed tax and interest rates
+        # https://investors.constellationenergy.com/static-files/f7b0e530-f7eb-434e-ae1b-7fbc886a256f slide 36
+        self.tau = 0.19
+
+        # From class examples
+        self.p_tax = 0.01
+
+        # INL cites this as typical (average weighted cost of capital) https://inldigitallibrary.inl.gov/sites/sti/sti/Sort_66425.pdf
+        self.x = 0.08
+
     def determine_bid(self):
         self.storage_bid = np.quantile(
             self.previous_day, self.storage_quantile
@@ -155,27 +204,27 @@ class DayAheadNatrium(object):
         in $/MWhe"""
         self.levelized_npp_capex = calc_levelized_capex(
             self.lifetime,
-            p_tax,
-            tau,
-            x,
-            self.thermal_power * npp_capital_per_mwth,
+            self.p_tax,
+            self.tau,
+            self.x,
+            self.thermal_power * self.npp_capital_per_mwth,
             self.continuous_output,
         )
         self.levelized_bop_capex = calc_levelized_capex(
             self.lifetime,
-            p_tax,
-            tau,
-            x,
-            self.max_output * bop_capital_per_mwe,
+            self.p_tax,
+            self.tau,
+            self.x,
+            self.max_output * self.bop_capital_per_mwe,
             self.continuous_output,
         )
         self.levelilzed_tes_capex = calc_levelized_capex(
             self.lifetime,
-            p_tax,
-            tau,
-            x,
+            self.p_tax,
+            self.tau,
+            self.x,
             self.max_stored_energy
-            * tes_capital_per_mwhth
+            * self.tes_capital_per_mwhth
             / self.thermal_efficiency,
             self.continuous_output,
         )
@@ -193,21 +242,21 @@ class DayAheadNatrium(object):
 
     def get_fixed_costs(self):
         self.npp_fixed_om = (
-            npp_fixed_costs_per_year_per_mwth
+            self.npp_fixed_costs_per_year_per_mwth
             * self.thermal_power
             / self.continuous_output
             / 365
             / 24
         )  # $/MWhe
         self.bop_fixed_om = (
-            bop_fixed_costs_per_year_per_mwe
+            self.bop_fixed_costs_per_year_per_mwe
             * self.continuous_output
             / self.continuous_output
             / 365
             / 24
         )  # $/MWhe
         self.tes_fixed_om = (
-            tes_fixed_costs_per_year_per_mwhth
+            self.tes_fixed_costs_per_year_per_mwhth
             * self.max_stored_energy
             / self.thermal_efficiency
             / self.continuous_output
@@ -259,7 +308,16 @@ class DayAheadNatrium(object):
         return (
             self.total_fixed_om
             + self.total_levelized_capex
-            + bop_variable_costs_per_mwhe
-            + tes_variable_costs
-            + npp_variable_costs_per_mwhth / self.thermal_efficiency
+            + self.bop_variable_costs_per_mwhe
+            + self.tes_variable_costs  # TODO if the variable costs are increased from zero we need some logic here
+            + self.npp_variable_costs_per_mwhth / self.thermal_efficiency
         )
+
+    def get_average_price_for_electricity(self):
+        average_price = (
+            sum(self.data_dict["Revenue"]) / self.continuous_output / 365 / 24
+        )
+        return average_price
+
+    def reset_reactor(self):
+        self.data_dict = {key: [] for key in self.data_dict}
